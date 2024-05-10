@@ -7,6 +7,8 @@
 // mode, utilizing the read() and write() system calls, without mounting the FAT32 file system.
 // The program will be named fatmod. Through various options, it will interact with a file system image, enabling reading and writing of files.
 
+// TODOs:
+// Convert read by cluster to read by sector // NOTE: This may not be necessary
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,16 +29,21 @@
 #define SUCCESS 0   
 #define FALSE 0
 #define TRUE 1
+#define INVALID_ARGUMENTS "Invalid arguments. Please enter -h for help\n"
+#define FAT_TABLE_END_OF_FILE_VALUE 0x0FFFFFF8
 
 #define SECTORSIZE 512   // bytes
 #define CLUSTERSIZE  1024  // bytes
 #define FILENAME_SIZE 8 // bytes
 #define FILE_EXTENSION_SIZE 3 // bytes
 #define DOT_SIZE 1 // bytes
+#define FAT_TABLE_ENTRY_SIZE 4 // bytes
 #define TOTAL_FILENAME_SIZE FILE_EXTENSION_SIZE + FILENAME_SIZE // bytes    
 #define FILE_DIRECTORY_ENTRY_SIZE 32 // bytes
-#define N_ROOT_DIRECTORY_CLUSTERS 1 // clusters
 
+#define N_RESERVED_SECTORS 32 // sectors
+#define N_ROOT_DIRECTORY_CLUSTERS 1 // clusters
+#define N_FAT_TABLES 1 // number of FAT tables
 #define ASSUMED_CLUSTER_SIZE 2 // sectors   
 #define ASSUMED_SEC_PER_CLUS CLUSTERSIZE/SECTORSIZE // sectors
 #define ASSUMED_ROOT_DIRECTORY_CLUSTER 2 // cluster number
@@ -44,13 +51,17 @@
 // ___Function Prototypes___
 
 // Main Functions
-int read_sector(int fd, unsigned char* buffer, unsigned int snum);
-int write_sector(int fd, unsigned char* buffer, unsigned int snum);
-int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number);
+// read the root directory from the disk image which is stored in the second cluster
 void read_root_directory(int fd, int is_list_directories);
+// read the file in binary or ASCII
+void read_file(int fd, int is_binary);
 void print_help_message();
 
 // Helper Functions 
+int read_sector(int fd, unsigned char* buffer, unsigned int snum);
+int write_sector(int fd, unsigned char* buffer, unsigned int snum);
+int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number);
+int get_next_FAT_table_entry(int fd, unsigned int cluster_number);
 int char_overflow_check(int value);
 int bytes_to_int_little_endian(char* bytes);
 void int_to_bytes_little_endian(int val, char* bytes);
@@ -62,11 +73,14 @@ int get_length_of_file_name(char* str);
 // ___Global Variables___
 int reserved_sectors;
 int fat_size; // in sectors 
+int number_of_fat_tables;
+int fat_table_offset; // in sectors
 int root_directory_cluster_number;
 int sectors_per_cluster;
 unsigned char boot_sector_raw[SECTORSIZE];
 unsigned char root_directory[CLUSTERSIZE];
 unsigned char file_directory_entry_raw[FILE_DIRECTORY_ENTRY_SIZE];
+unsigned char fat_table_entry[4];
 char input_file_name[TOTAL_FILENAME_SIZE];
 
 struct fat_boot_sector* boot_sector;
@@ -90,11 +104,11 @@ struct msdos_dir_entry* file_directory_entry;
 ./ fatmod disk1 -d fileB.bin
 */
 int main(int argc, char* argv[]) {
-    int will_execute = 0; // flag to check if the program will execute
-
     // BELOW ARE FOR TESTING PURPOSES
-    char* test_argv[] = { "fatmod", "disk1", "-l" };
-    argc = 3;
+    /* char* test_argv[] = { "fatmod", "disk1", "-l" };
+    argc = 3; */
+    char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
+    argc = 5;
     argv = test_argv;
 
     // Check if the user has entered the correct number of arguments
@@ -103,11 +117,11 @@ int main(int argc, char* argv[]) {
             print_help_message();
             return 0;
         } else {
-            printf("Invalid arguments. Please enter -h for help\n");
+            printf("%s", INVALID_ARGUMENTS);
             return 0;
         }
     } else if (argc < 3) {
-        printf("Invalid arguments. Please enter -h for help\n");
+        printf("%s", INVALID_ARGUMENTS);
         return 0;
     }
 
@@ -131,40 +145,56 @@ int main(int argc, char* argv[]) {
     // Cast the boot sector to a struct 
     boot_sector = (struct fat_boot_sector*) boot_sector_raw;
     reserved_sectors = boot_sector->reserved;
-    if (boot_sector->fats != 1) {
-        printf("WARNING: Number of FATs is not 1!\n");
+    if (reserved_sectors != N_RESERVED_SECTORS) {
+        printf("WARNING: Reserved sectors is not %d!\n", N_RESERVED_SECTORS);
     }
     fat_size = boot_sector->fat32.length;
     sectors_per_cluster = boot_sector->sec_per_clus;
     if (sectors_per_cluster != ASSUMED_SEC_PER_CLUS) {
-        printf("WARNING: Sectors per cluster is not 2!\n");
+        printf("WARNING: Sectors per cluster is not %d!\n", ASSUMED_SEC_PER_CLUS);
     }
     root_directory_cluster_number = boot_sector->fat32.root_cluster;
     if (root_directory_cluster_number != ASSUMED_ROOT_DIRECTORY_CLUSTER) {
-        printf("WARNING: Root directory is not in the second cluster!\n");
+        printf("WARNING: Root directory cluster number is not %d!\n", ASSUMED_ROOT_DIRECTORY_CLUSTER);
     }
+    number_of_fat_tables = boot_sector->fats;
+    if (number_of_fat_tables != N_FAT_TABLES) {
+        printf("WARNING: Number of FAT tables is not %d!\n", N_FAT_TABLES);
+    }
+
 
     // Read the second argument 
     // if it is -l, list the contents of the root directory
     if (strcmp(argv[2], "-l") == 0) {
-        will_execute = 1;
         read_root_directory(fd, 1);
-    }
+    } else if (strcmp(argv[2], "-r") == 0) {
+        // Check if the user has entered the correct number of arguments
+        if (argc < 4) {
+            printf("%s", INVALID_ARGUMENTS);
+            return 0;
+        }
 
-    // Read the second argument which is the file name but uppercase
-    strcpy(input_file_name, argv[2]);
-    to_upper(input_file_name);
+        // Read the file name and extension
+        strcpy(input_file_name, argv[4]);
+        to_upper(input_file_name);
 
-    if (strcmp(argv[2], "-c") == 0) {
-        will_execute = 1;
+        // Read the file in binary or ASCII
+        if (strcmp(argv[3], "-b") == 0) {
+            // Read and print the file in binary
+            read_file(fd, 1);
+        } else if (strcmp(argv[3], "-a") == 0) {
+            // Read and print the file in ASCII
+            read_file(fd, 0);
+        } else {
+            printf("%s", INVALID_ARGUMENTS);
+            return 0;
+        }
+    } else if (strcmp(argv[2], "-c") == 0) {
 
         // Create a new file
         // Read the third argument
         // Create a new file
-    }
-
-    if (strcmp(argv[2], "-w") == 0) {
-        will_execute = 1;
+    } else if (strcmp(argv[2], "-w") == 0) {
 
         // Write string to file
         // Read the third argument
@@ -172,32 +202,105 @@ int main(int argc, char* argv[]) {
         // Read the fifth argument
         // Read the sixth argument
         // Write the string to the file
-    }
-
-    if (strcmp(argv[2], "-r") == 0) {
-        will_execute = 1;
-
-        // Read and print the file
-        // Read the third argument
-        // Read the fourth argument
-        // Read the fifth argument
-        // Read the sixth argument
-        // Read the file in binary or ASCII
-    }
-
-    if (strcmp(argv[2], "-d") == 0) {
-        will_execute = 1;
-
+    } else if (strcmp(argv[2], "-d") == 0) {
         // Delete the file
         // Read the third argument
         // Delete the file
-    }
-
-    if (will_execute == 0) {
-        printf("Invalid arguments. Please enter -h for help\n");
+    } else {
+        printf("%s", INVALID_ARGUMENTS);
     }
 
     close(fd);
+}
+
+// Function to read the file in binary or ASCII, following the steps below:
+// - Read the root directory to get the file directory entry
+// - Get the first cluster of the file by combining the high and low bytes
+// - Read the FAT table entry for the first cluster to get the next cluster
+// - Start reading the file as a chain of clusters starting from the first cluster until the end of the file
+// - Read cluster by cluster from the disk image and print the contents of the file in binary or ASCII in sectors
+void read_file(int fd, int is_binary) {
+    // Read the root directory to get the file directory entry
+    read_root_directory(fd, 0);
+    if (file_directory_entry->name[0] == 0x00 || file_directory_entry->name[0] == 0xE5) {
+        printf("File not found!\n");
+        return;
+    }
+
+    // BELOW ARE FOR TESTING PURPOSES
+    struct msdos_dir_entry* temp = file_directory_entry;
+    temp = (struct msdos_dir_entry*) file_directory_entry_raw;
+    printf("Start: %d\n", file_directory_entry->start);
+    printf("StartHi: %d\n", file_directory_entry->starthi);
+    printf("Size: %d\n", file_directory_entry->size);
+
+
+    // Get the first cluster of the file by combining the high and low bytes
+    unsigned int current_cluster = file_directory_entry->starthi << 16 | file_directory_entry->start;
+    unsigned int next_cluster = get_next_FAT_table_entry(fd, current_cluster);
+
+    // BELOW ARE FOR TESTING PURPOSES
+    printf("Current Cluster: %d\n", current_cluster);
+    printf("Next Cluster: %d\n", next_cluster);
+
+    // Start reading the file as a chain of clusters starting from the first cluster until the end of the file
+    // Read cluster by cluster from the disk image
+    unsigned char cluster_buffer[CLUSTERSIZE];
+    for (int i = 0; i < file_directory_entry->size; i += CLUSTERSIZE) {
+        // Read the cluster
+        read_cluster(fd, cluster_buffer, current_cluster);
+
+        // Print the contents of the file in binary or ASCII in sectors
+        for (int j = 0; j < CLUSTERSIZE / SECTOR_SIZE; j++) {
+            if (is_binary) {
+                // Print the contents of the file in binary
+                for (int k = 0; k < SECTOR_SIZE; k++) {
+                    printf("%02X ", cluster_buffer[j * SECTOR_SIZE + k]);
+                }
+                printf("\n");
+            } else {
+                // Print the contents of the file in ASCII
+                for (int k = 0; k < SECTOR_SIZE; k++) {
+                    if (isprint(cluster_buffer[j * SECTOR_SIZE + k])) {
+                        printf("%c", cluster_buffer[j * SECTOR_SIZE + k]);
+                    } else {
+                        printf(".");
+                    }
+                }
+                printf("\n");
+            }
+        }
+
+        // Get the next cluster
+        current_cluster = next_cluster;
+        next_cluster = get_next_FAT_table_entry(fd, current_cluster);
+
+        // Check if the next cluster is the end of the file
+        if (next_cluster >= FAT_TABLE_END_OF_FILE_VALUE) {
+            break;
+        }
+    }
+
+
+}
+
+// Function to get the next FAT table entry
+// Read the FAT table entry for the given cluster number
+int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
+    // Calculate the offset
+    off_t offset = reserved_sectors * SECTORSIZE + cluster_number * FAT_TABLE_ENTRY_SIZE;
+    lseek(fd, offset, SEEK_SET);
+
+    // Read the FAT table entry
+    int n = read(fd, fat_table_entry, 4);
+
+    if (n < 0) {
+        return FAILURE;
+    }
+
+    // Convert the FAT table entry to an integer
+    int next_cluster = bytes_to_int_little_endian(fat_table_entry);
+    return next_cluster;
 }
 
 // Read the contents of the root directory
@@ -218,12 +321,8 @@ void read_root_directory(int fd, int is_list_directories) {
         file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
 
         // Check if the file is a valid file
-        if (file_directory_entry->name[0] == 0x00) {
-            // This entry is free
-            // TODO: handle this case
-            continue;
-        } else if (file_directory_entry->name[0] == 0xE5) {
-            // This entry is deleted
+        if (file_directory_entry->name[0] == 0x00 || file_directory_entry->name[0] == 0xE5) {
+            // This entry is free or deleted
             // TODO: handle this case
             continue;
         } else if (file_directory_entry->attr == 0x0F) {
@@ -232,7 +331,7 @@ void read_root_directory(int fd, int is_list_directories) {
             continue;
         } else {
             // This entry is a valid file
-            // Print the file name and extension by inserting a dot between them
+            // Get the file name and extension by inserting a dot between them
             // File name is 11 bytes long consisting of 8 bytes for the name and 3 bytes for the extension
             char total_file_name[TOTAL_FILENAME_SIZE + DOT_SIZE];
             memset(total_file_name, '\0', TOTAL_FILENAME_SIZE + DOT_SIZE);
@@ -276,12 +375,8 @@ void read_root_directory(int fd, int is_list_directories) {
                 // If they do not match, set the file_directory_entry pointer to NULL
                 if (strcmp(total_file_name, input_file_name) == 0) {
                     break;
-                } else {
-                    file_directory_entry = NULL;
                 }
-
             }
-
         }
     }
 }
