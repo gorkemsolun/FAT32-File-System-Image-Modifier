@@ -10,6 +10,7 @@
 // TODOs:
 // Convert read by cluster to read by sector // NOTE: This may not be necessary
 // You may add incrementing pointers // NOTE: This may not be necessary
+// Add centiseconds to the time // NOTE: This may not be necessary // Cağrı bunu yapabilirsin
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -375,10 +376,6 @@ int main(int argc, char* argv[]) {
 // If the file is not empty, the program will find the cluster that contains the start offset and write the data
 // If the length is larger than the remaining space in the cluster, the program will allocate a new cluster(s) and update the FAT table
 int write_bytes_to_file(int fd, int start_offset, int length, int data) {
-    // BELOW ARE FOR TESTING PURPOSES
-    struct msdos_dir_entry* new_file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
-
-
     // Find the entry with the given file name and extension
     int directory_entry_index = read_root_directory(fd, FIND_GIVEN_ENTRY);
     if (directory_entry_index == FAILURE) {
@@ -575,9 +572,6 @@ int create_file_entry(int fd) {
         printf("Root directory is full!\n");
         return FAILURE;
     }
-
-    // BELOW ARE FOR TESTING PURPOSES
-    struct msdos_dir_entry* new_file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
 
     // Create a new file directory entry for FAT32 file system
     memset(file_directory_entry_raw, 0, FILE_DIRECTORY_ENTRY_SIZE);
