@@ -9,9 +9,7 @@
 
 // TODOs:
 // Convert read by cluster to read by sector // NOTE: This may not be necessary
-// Check if the root directory is full before creating a new file
-// Read files in file sizes that is written in the file directory entry
-// You may add incrementing pointers
+// You may add incrementing pointers // NOTE: This may not be necessary
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,12 +50,12 @@
 #define TOTAL_FILENAME_SIZE FILE_EXTENSION_SIZE + FILENAME_SIZE // bytes    
 #define FILE_DIRECTORY_ENTRY_SIZE 32 // bytes
 
-#define N_RESERVED_SECTORS 32 // sectors
-#define N_ROOT_DIRECTORY_CLUSTERS 1 // clusters
-#define N_FAT_TABLES 1 // number of FAT tables
-#define ASSUMED_CLUSTER_SIZE 2 // sectors   
-#define ASSUMED_SEC_PER_CLUS CLUSTERSIZE/SECTORSIZE // sectors
-#define ASSUMED_ROOT_DIRECTORY_CLUSTER 2 // cluster number
+#define N_RESERVED_SECTORS 32 // it is assumed that the reserved sectors are 32
+#define N_ROOT_DIRECTORY_CLUSTERS 1 // it is assumed that the root directory is stored in one cluster
+#define N_FAT_TABLES 1 // it is assumed that there is only one FAT table
+#define ASSUMED_CLUSTER_SIZE 2 // it is assumed that the cluster size is 2 sectors   
+#define ASSUMED_SEC_PER_CLUS CLUSTERSIZE/SECTORSIZE // it is assumed that the sectors per cluster is 2
+#define ASSUMED_ROOT_DIRECTORY_CLUSTER 2 // it is assumed that the root directory is stored in the second cluster
 
 // ___Function Prototypes___
 
@@ -89,6 +87,7 @@ int bytes_to_int(char* bytes, int length);
 void int_to_bytes(int val, char* bytes);
 
 void to_upper(char* str);
+int check_file_name(char* str);
 int get_length_of_file_name(char* str);
 
 
@@ -97,14 +96,20 @@ int get_length_of_file_name(char* str);
 
 int sector_size;
 int reserved_sectors;
+int total_sectors;
+
+int root_directory_cluster_number; // in clusters
+int root_directory_cluster_offset; // in sectors
+int root_directory_max_content_size; // in directory entries
+
+int sectors_per_cluster;
+int usable_clusters_size;
+
 int fat_size; // in sectors 
+int usable_fat_table_size;
 int number_of_fat_tables;
 int fat_table_offset; // in sectors
-int root_directory_cluster_number;
-int sectors_per_cluster;
-int total_sectors;
-int usable_clusters_size;
-int usable_fat_table_size;
+
 unsigned char boot_sector_raw[SECTORSIZE];
 // Used for reading the root directory, which is stored in the second cluster
 unsigned char root_directory[CLUSTERSIZE];
@@ -146,8 +151,8 @@ int main(int argc, char* argv[]) {
     argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file3.bin" };
     argc = 5; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
-    argc = 5; */
+    char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
+    argc = 5;
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "fileB.bin" };
     argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileA.txt" };
@@ -162,8 +167,8 @@ int main(int argc, char* argv[]) {
     argc = 4; */
     /* char* test_argv[] = { "fatmod", "disk1", "-d", "file5.txt" };
     argc = 4; */
-    char* test_argv[] = { "fatmod", "disk1", "-w", "fileB.bin", "0", "5000", "31" };
-    argc = 7;
+    /* char* test_argv[] = { "fatmod", "disk1", "-w", "fileB.bin", "0", "5000", "31" };
+    argc = 7; */
 
     argv = test_argv;
 
@@ -227,6 +232,9 @@ int main(int argc, char* argv[]) {
     }
     total_sectors = boot_sector->total_sect;
     fat_size = boot_sector->fat32.length;
+    root_directory_cluster_offset = (reserved_sectors + fat_size * number_of_fat_tables) * SECTORSIZE;
+    fat_table_offset = reserved_sectors * SECTORSIZE;
+    root_directory_max_content_size = CLUSTERSIZE / FILE_DIRECTORY_ENTRY_SIZE;
 
     // Calculate usable clusters size and usable fat table size
     usable_clusters_size = (total_sectors - reserved_sectors - fat_size * number_of_fat_tables) / sectors_per_cluster;
@@ -257,9 +265,10 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Read the file name and extension
+        // Read the file name and extension and check if the file name is valid
         strcpy(input_file_name, argv[4]);
         to_upper(input_file_name);
+        check_file_name(input_file_name);
 
         // Read the file in binary or ASCII
         if (strcmp(argv[3], "-b") == 0) {
@@ -284,23 +293,19 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Read the file name and extension
+        // Read the file name and extension and check if the file name is valid 
         strcpy(input_file_name, argv[3]);
         to_upper(input_file_name);
-
-        // Check if there exists a same file in the root directory
-        int result = read_root_directory(fd, FIND_GIVEN_ENTRY);
-        if (result != FAILURE) {
-            printf("File already exists!\n");
-            return 0;
-        }
+        check_file_name(input_file_name);
 
         // Create a file named with given input in the root directory
-        result = create_file_entry(fd);
+        int result = create_file_entry(fd);
         if (result == FAILURE) {
             printf("Could not create file entry!\n");
             return 0;
         }
+
+        printf("File created successfully!\n");
     }
 
     // With the -w option, the program will write data into the file starting at the offset given in the fifth argument. 
@@ -317,9 +322,10 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Read the file name and extension
+        // Read the file name and extension and check if the file name is valid
         strcpy(input_file_name, argv[3]);
         to_upper(input_file_name);
+        check_file_name(input_file_name);
 
         // Read the start offset, length, and the string
         int start_offset = atoi(argv[4]);
@@ -343,9 +349,10 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Read the file name and extension
+        // Read the file name and extension and check if the file name is valid
         strcpy(input_file_name, argv[3]);
         to_upper(input_file_name);
+        check_file_name(input_file_name);
 
         // Delete the file
         int result = delete_file(fd);
@@ -368,6 +375,10 @@ int main(int argc, char* argv[]) {
 // If the file is not empty, the program will find the cluster that contains the start offset and write the data
 // If the length is larger than the remaining space in the cluster, the program will allocate a new cluster(s) and update the FAT table
 int write_bytes_to_file(int fd, int start_offset, int length, int data) {
+    // BELOW ARE FOR TESTING PURPOSES
+    struct msdos_dir_entry* new_file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
+
+
     // Find the entry with the given file name and extension
     int directory_entry_index = read_root_directory(fd, FIND_GIVEN_ENTRY);
     if (directory_entry_index == FAILURE) {
@@ -419,6 +430,7 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
                 return FAILURE;
             }
 
+            // Update the FAT table
             if (current_cluster == 0) {
                 // Update the first cluster of the file
                 file_directory_entry->starthi = free_cluster >> 16;
@@ -427,11 +439,8 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
                 // Change the end value of the last cluster to the new cluster
                 write_fat_table_entry(fd, current_cluster, free_cluster);
             }
-
-            // Change the end value of the last cluster to the new cluster
-            write_fat_table_entry(fd, current_cluster, free_cluster);
             // Change the new cluster to the end of file value
-            write_fat_table_entry(fd, free_cluster, FAT_TABLE_END_OF_FILE_VALUE);   
+            write_fat_table_entry(fd, free_cluster, FAT_TABLE_END_OF_FILE_VALUE);
 
             // Refresh the current cluster by filling the new cluster with the zeros
             unsigned char cluster_buffer[CLUSTERSIZE];
@@ -441,9 +450,6 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
             // Update the current cluster
             current_cluster = free_cluster;
         }
-
-        // Set the last cluster of the file to the end of file value
-        write_fat_table_entry(fd, current_cluster, FAT_TABLE_END_OF_FILE_VALUE);
     }
 
     // Update the file directory entry in the root directory
@@ -479,10 +485,9 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
 
     // Write the data to the file
     unsigned char cluster_buffer[CLUSTERSIZE];
+    // Read the cluster
+    read_cluster(fd, cluster_buffer, current_cluster);
     for (int i = 0; i < length; i++) {
-        // Read the cluster
-        read_cluster(fd, cluster_buffer, current_cluster);
-
         // Write the data to the cluster
         cluster_buffer[cluster_offset] = data;
 
@@ -497,6 +502,9 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
 
             cluster_offset = 0;
             current_cluster = get_next_FAT_table_entry(fd, current_cluster);
+
+            // Read the cluster
+            read_cluster(fd, cluster_buffer, current_cluster);
         }
     }
 
@@ -533,8 +541,7 @@ int delete_file(int fd) {
     // Delete the file directory entry by setting the first byte to 0xE5
     file_directory_entry->name[0] = 0xE5;
     // Calculate the offset
-    off_t offset = reserved_sectors * SECTORSIZE
-        + fat_size * number_of_fat_tables * SECTORSIZE
+    off_t offset = root_directory_cluster_offset
         + directory_entry_index * FILE_DIRECTORY_ENTRY_SIZE;
     // Update the file directory entry in the root directory
     lseek(fd, offset, SEEK_SET);
@@ -555,6 +562,13 @@ int delete_file(int fd) {
 // Creates a file named with given input in the root directory. This file will have a
 // corresponding directory entry, an initial size of 0, and no blocks allocated for it initially.
 int create_file_entry(int fd) {
+    // Check if there exists a same file in the root directory
+    int result = read_root_directory(fd, FIND_GIVEN_ENTRY);
+    if (result != FAILURE) {
+        printf("File already exists!\n");
+        return 0;
+    }
+
     // Find the first free entry in the root directory
     int free_root_directory_entry_index = read_root_directory(fd, FIND_FREE_ENTRY);
     if (free_root_directory_entry_index == FAILURE) {
@@ -591,7 +605,8 @@ int create_file_entry(int fd) {
         file_directory_entry->name[i] = input_file_name[input_file_name_index++];
     }
 
-    // Set the attribute of the file directory entry
+    // Set the attribute of the file directory entry to 0x20 as it is a file and not a directory
+    // Directory entries are not supported in this program
     file_directory_entry->attr = 0x20;
 
     // Set the creation time, date, last access date
@@ -675,12 +690,24 @@ void read_file(int fd, int is_binary) {
                     if ((k + 1) % 16 == 0) {
                         printf("\n");
                     }
+
+                    // End of the file is reached so print a new line and break the loop
+                    if (i + j * SECTORSIZE + k == file_directory_entry->size - 1) {
+                        printf("\n");
+                        break;
+                    }
                 }
 
             } else {
                 // Print the contents of the file in ASCII
                 for (int k = 0; k < SECTORSIZE; k++) {
                     printf("%c", cluster_buffer[j * SECTORSIZE + k]);
+
+                    // End of the file is reached so print a new line and break the loop
+                    if (i + j * SECTORSIZE + k == file_directory_entry->size - 1) {
+                        printf("\n");
+                        break;
+                    }
                 }
             }
         }
@@ -697,7 +724,7 @@ void read_file(int fd, int is_binary) {
 // Read the FAT table entry for the given cluster number
 int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
     // Calculate the offset
-    off_t offset = reserved_sectors * SECTORSIZE + cluster_number * FAT_TABLE_ENTRY_SIZE;
+    off_t offset = fat_table_offset + cluster_number * FAT_TABLE_ENTRY_SIZE;
     lseek(fd, offset, SEEK_SET);
 
     // Read the FAT table entry
@@ -728,7 +755,7 @@ int read_root_directory(int fd, int option) {
 
     // Traverse every entry in the root directory
     // Skip the first entry because it is the volume label
-    for (int i = 1; i < CLUSTERSIZE / FILE_DIRECTORY_ENTRY_SIZE; i++) {
+    for (int i = 1; i < root_directory_max_content_size; i++) {
         // Read the file directory entry
         memcpy(file_directory_entry_raw, root_directory + i * FILE_DIRECTORY_ENTRY_SIZE, FILE_DIRECTORY_ENTRY_SIZE);
         file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
@@ -797,6 +824,7 @@ int read_root_directory(int fd, int option) {
         }
     }
 
+    // If the option is LIST_DIRECTORIES, return SUCCESS as the operation is successful
     if (option == LIST_DIRECTORIES) {
         return SUCCESS;
     } else {
@@ -807,8 +835,8 @@ int read_root_directory(int fd, int option) {
 // Read a cluster from the disk image
 int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number) {
     // Calculate the offset
-    off_t offset = (reserved_sectors + fat_size * number_of_fat_tables
-        + (cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
+    off_t offset = root_directory_cluster_offset
+        + ((cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
     lseek(fd, offset, SEEK_SET);
 
     // Read the cluster
@@ -840,8 +868,8 @@ int read_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
 // Write a cluster to the disk image
 int write_cluster(int fd, unsigned char* buffer, unsigned int cluster_number) {
     // Calculate the offset
-    off_t offset = (reserved_sectors + fat_size * number_of_fat_tables
-        + (cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
+    off_t offset = root_directory_cluster_offset
+        + ((cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
     lseek(fd, offset, SEEK_SET);
 
     // Write the cluster
@@ -875,7 +903,7 @@ int write_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
 // Write a fat table entry to the disk image
 int write_fat_table_entry(int fd, unsigned int cluster_number, unsigned int value) {
     // Calculate the offset
-    off_t offset = reserved_sectors * SECTORSIZE + cluster_number * FAT_TABLE_ENTRY_SIZE;
+    off_t offset = fat_table_offset + cluster_number * FAT_TABLE_ENTRY_SIZE;
     lseek(fd, offset, SEEK_SET);
 
     // Convert the value to 4 bytes in little-endian order
@@ -895,8 +923,7 @@ int write_fat_table_entry(int fd, unsigned int cluster_number, unsigned int valu
 // Write the file directory entry to the root directory 
 int write_file_directory_entry(int fd, int directory_entry_index) {
     // Calculate the offset
-    off_t offset = reserved_sectors * SECTORSIZE
-        + fat_size * number_of_fat_tables * SECTORSIZE
+    off_t offset = root_directory_cluster_offset
         + directory_entry_index * FILE_DIRECTORY_ENTRY_SIZE;
     lseek(fd, offset, SEEK_SET);
 
@@ -956,6 +983,33 @@ void to_upper(char* str) {
     for (int i = 0; i < strlen(str); i++) {
         str[i] = toupper(str[i]);
     }
+}
+
+// Check if the file name is valid
+int check_file_name(char* str) {
+    // Check if the file name is empty
+    if (strlen(str) > TOTAL_FILENAME_SIZE) {
+        return FAILURE;
+    }
+
+    // Check if the file name or extension is empty by checking the dot
+    if (str[0] == '.' || str[strlen(str) - 1] == '.') {
+        return FAILURE;
+    }
+
+    // Check if the file name or extension is empty by checking the space
+    if (str[0] == ' ' || str[strlen(str) - 1] == ' ') {
+        return FAILURE;
+    }
+
+    // Check the characters
+    for (int i = 0; i < strlen(str); i++) {
+        if (!isalnum(str[i]) && str[i] != '-' && str[i] != '_' && str[i] != '.') {
+            return FAILURE;
+        }
+    }
+
+    return SUCCESS;
 }
 
 // Get the length of the ascii string by traversing the string
