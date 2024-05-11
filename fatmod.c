@@ -107,7 +107,9 @@ int main(int argc, char* argv[]) {
     // BELOW ARE FOR TESTING PURPOSES
     /* char* test_argv[] = { "fatmod", "disk1", "-l" };
     argc = 3; */
-    char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
+    argc = 5; */
+    char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
     argc = 5;
     argv = test_argv;
 
@@ -230,9 +232,9 @@ void read_file(int fd, int is_binary) {
     // BELOW ARE FOR TESTING PURPOSES
     struct msdos_dir_entry* temp = file_directory_entry;
     temp = (struct msdos_dir_entry*) file_directory_entry_raw;
-    printf("Start: %d\n", file_directory_entry->start);
-    printf("StartHi: %d\n", file_directory_entry->starthi);
-    printf("Size: %d\n", file_directory_entry->size);
+    printf("\nStart: %d\n", file_directory_entry->start);
+    printf("\nStartHi: %d\n", file_directory_entry->starthi);
+    printf("\nSize: %d\n", file_directory_entry->size);
 
 
     // Get the first cluster of the file by combining the high and low bytes
@@ -240,45 +242,56 @@ void read_file(int fd, int is_binary) {
     unsigned int next_cluster = get_next_FAT_table_entry(fd, current_cluster);
 
     // BELOW ARE FOR TESTING PURPOSES
-    printf("Current Cluster: %d\n", current_cluster);
-    printf("Next Cluster: %d\n", next_cluster);
+    printf("\nCurrent Cluster: %d\n", current_cluster);
+    printf("\nNext Cluster: %d\n", next_cluster);
 
     // Start reading the file as a chain of clusters starting from the first cluster until the end of the file
     // Read cluster by cluster from the disk image
     unsigned char cluster_buffer[CLUSTERSIZE];
     for (int i = 0; i < file_directory_entry->size; i += CLUSTERSIZE) {
+        // Check if the next cluster is the end of the file
+        if (current_cluster >= FAT_TABLE_END_OF_FILE_VALUE) {
+            printf("\n");
+            break;
+        }
+        
         // Read the cluster
         read_cluster(fd, cluster_buffer, current_cluster);
 
         // Print the contents of the file in binary or ASCII in sectors
+        // In binary form: It will display the content of the file in binary form on the screen. 
+        // The content can be either binary or text. Each byte will be printed in hexadecimal form. 
+        // With each line printing 16 bytes.The first hexadecimal number indicates the start
+        // offset of that line in the file.
+        // In ASCII form: It will display the content of the file in ASCII form on the screen.
         for (int j = 0; j < CLUSTERSIZE / SECTOR_SIZE; j++) {
+            // Print the contents of the file in binary
             if (is_binary) {
-                // Print the contents of the file in binary
-                for (int k = 0; k < SECTOR_SIZE; k++) {
-                    printf("%02X ", cluster_buffer[j * SECTOR_SIZE + k]);
-                }
-                printf("\n");
-            } else {
-                // Print the contents of the file in ASCII
-                for (int k = 0; k < SECTOR_SIZE; k++) {
-                    if (isprint(cluster_buffer[j * SECTOR_SIZE + k])) {
-                        printf("%c", cluster_buffer[j * SECTOR_SIZE + k]);
-                    } else {
-                        printf(".");
+                // Print the current sector
+                for (int k = 0; k < SECTORSIZE; k++) {
+                    // For every 16 bytes, print the start offset of that line in the file
+                    if (k % 16 == 0) {
+                        printf("%08X ", i + j * SECTORSIZE + k);
+                    }
+                    // Print the content of the file in hexadecimal form
+                    printf("%02X ", cluster_buffer[j * SECTORSIZE + k]);
+                    // Print a new line after every 16 bytes
+                    if ((k + 1) % 16 == 0) {
+                        printf("\n");
                     }
                 }
-                printf("\n");
+
+            } else {
+                // Print the contents of the file in ASCII
+                for (int k = 0; k < SECTORSIZE; k++) {
+                    printf("%c", cluster_buffer[j * SECTORSIZE + k]);
+                }
             }
         }
 
         // Get the next cluster
         current_cluster = next_cluster;
         next_cluster = get_next_FAT_table_entry(fd, current_cluster);
-
-        // Check if the next cluster is the end of the file
-        if (next_cluster >= FAT_TABLE_END_OF_FILE_VALUE) {
-            break;
-        }
     }
 
 
