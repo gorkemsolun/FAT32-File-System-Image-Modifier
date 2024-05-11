@@ -10,6 +10,8 @@
 // TODOs:
 // Convert read by cluster to read by sector // NOTE: This may not be necessary
 // Check if the root directory is full before creating a new file
+// Read files in file sizes that is written in the file directory entry
+// You may add incrementing pointers
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +32,11 @@
 #define SUCCESS 0
 #define INVALID_ARGUMENTS "Invalid arguments. Please enter -h for help\n"
 #define FAT_TABLE_END_OF_FILE_VALUE 0x0FFFFFF8
+#define FAT_TABLE_BAD_CLUSTER_VALUE 0x0FFFFFF7
+#define FAT_TABLE_FREE_CLUSTER_VALUE 0x00000000
+#define FAT_TABLE_RESERVED_CLUSTER_VALUE 0x0FFFFFF0
+#define FAT_TABLE_LAST_CLUSTER_VALUE 0x0FFFFFFF
+#define MAX_NUMBER_OF_CLUSTERS_FAT_TABLE 0x10000000 // 2^28, fat entry high 4 bits are reserved
 
 // Options of the root directory function
 #define FIND_GIVEN_ENTRY 0
@@ -54,36 +61,50 @@
 
 // ___Function Prototypes___
 
-// read the root directory from the disk image which is stored in the second cluster
+// Read the root directory from the disk image which is stored in the second cluster
 int read_root_directory(int fd, int is_list_directories);
-// read the file in binary or ASCII
+// Read the file in binary or ASCII
 void read_file(int fd, int is_binary);
-// create a file named with given input in the root directory
+// Create a file named with given input in the root directory
 int create_file_entry(int fd);
-// delete the file named with given input in the root directory, and free the blocks allocated for it in the FAT
+// Delete the file named with given input in the root directory, and free the blocks allocated for it in the FAT
 int delete_file(int fd);
+// Write the bytes to the file
+int write_bytes_to_file(int fd, int start_offset, int length, int data);
 // print the help message about the usage of the program
 void print_help_message();
 
 int read_sector(int fd, unsigned char* buffer, unsigned int snum);
-int write_sector(int fd, unsigned char* buffer, unsigned int snum);
 int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number);
+
+int write_sector(int fd, unsigned char* buffer, unsigned int snum);
+int write_cluster(int fd, unsigned char* buffer, unsigned int cluster_number);
+int write_fat_table_entry(int fd, unsigned int cluster_number, unsigned int value);
+int write_file_directory_entry(int fd, int directory_entry_index);
+
 int get_next_FAT_table_entry(int fd, unsigned int cluster_number);
+
 int char_overflow_check(int value);
-int bytes_to_int_little_endian(char* bytes);
-void int_to_bytes_little_endian(int val, char* bytes);
+int bytes_to_int(char* bytes, int length);
+void int_to_bytes(int val, char* bytes);
+
 void to_upper(char* str);
 int get_length_of_file_name(char* str);
 
 
 
 // ___Global Variables___
+
+int sector_size;
 int reserved_sectors;
 int fat_size; // in sectors 
 int number_of_fat_tables;
 int fat_table_offset; // in sectors
 int root_directory_cluster_number;
 int sectors_per_cluster;
+int total_sectors;
+int usable_clusters_size;
+int usable_fat_table_size;
 unsigned char boot_sector_raw[SECTORSIZE];
 // Used for reading the root directory, which is stored in the second cluster
 unsigned char root_directory[CLUSTERSIZE];
@@ -99,6 +120,7 @@ struct fat_boot_sector* boot_sector;
 struct msdos_dir_entry* file_directory_entry;
 
 
+
 // ___Function Implementations___
 
 // Main function will read the given input once and given input will be executed
@@ -107,18 +129,15 @@ struct msdos_dir_entry* file_directory_entry;
 ./ fatmod -h
 ./ fatmod disk1 -l
 ./ fatmod disk1 -c fileA.txt
-./ fatmod disk1 -c fileB.bin
 ./ fatmod disk1 -w fileB.bin 0 3000 50
 ./ fatmod disk1 -r -b fileB.bin
 ./ fatmod disk1 -r -a fileC.txt  // assuming there is a non-empty ascii file fileC.txt
-./ fatmod disk1 -r -a fileB.bin  // we can do this because it has printable chars
 ./ fatmod disk1 -d fileA.txt
-./ fatmod disk1 -d fileB.bin
 */
 int main(int argc, char* argv[]) {
     // BELOW ARE FOR TESTING PURPOSES
-    char* test_argv[] = { "fatmod", "disk1", "-l" };
-    argc = 3;
+    /* char* test_argv[] = { "fatmod", "disk1", "-l" };
+    argc = 3; */
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
     argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file6.bin" };
@@ -129,9 +148,13 @@ int main(int argc, char* argv[]) {
     argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
     argc = 5; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "fileB.bin" };
+    argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileA.txt" };
     argc = 4; */
     /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileB.txt" };
+    argc = 4; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileB.bin" };
     argc = 4; */
     /* char* test_argv[] = { "fatmod", "disk1", "-d", "fileA.txt" };
     argc = 4; */
@@ -139,6 +162,9 @@ int main(int argc, char* argv[]) {
     argc = 4; */
     /* char* test_argv[] = { "fatmod", "disk1", "-d", "file5.txt" };
     argc = 4; */
+    char* test_argv[] = { "fatmod", "disk1", "-w", "fileB.bin", "0", "5000", "31" };
+    argc = 7;
+
     argv = test_argv;
 
     // Check if the user has entered the correct number of arguments
@@ -155,6 +181,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+
     // Read the disk image name then open it
     char diskname[128];
     strcpy(diskname, argv[1]);
@@ -163,6 +190,7 @@ int main(int argc, char* argv[]) {
         printf("Could not open disk image!\n");
         exit(1);
     }
+
 
     // Read the boot sector from the disk image 
     int n = read_sector(fd, boot_sector_raw, 0);
@@ -178,7 +206,6 @@ int main(int argc, char* argv[]) {
     if (reserved_sectors != N_RESERVED_SECTORS) {
         printf("WARNING: Reserved sectors is not %d!\n", N_RESERVED_SECTORS);
     }
-    fat_size = boot_sector->fat32.length;
     sectors_per_cluster = boot_sector->sec_per_clus;
     if (sectors_per_cluster != ASSUMED_SEC_PER_CLUS) {
         printf("WARNING: Sectors per cluster is not %d!\n", ASSUMED_SEC_PER_CLUS);
@@ -191,7 +218,27 @@ int main(int argc, char* argv[]) {
     if (number_of_fat_tables != N_FAT_TABLES) {
         printf("WARNING: Number of FAT tables is not %d!\n", N_FAT_TABLES);
     }
+    sector_size = bytes_to_int(boot_sector->sector_size, 2);
+    if (sector_size != SECTORSIZE) {
+        printf("WARNING: Sector size is not %d! It is %d.\n", SECTORSIZE, sector_size);
+    }
+    if (boot_sector->sec_per_clus != ASSUMED_SEC_PER_CLUS) {
+        printf("WARNING: Sectors per cluster is not %d!\n", ASSUMED_SEC_PER_CLUS);
+    }
+    total_sectors = boot_sector->total_sect;
+    fat_size = boot_sector->fat32.length;
 
+    // Calculate usable clusters size and usable fat table size
+    usable_clusters_size = (total_sectors - reserved_sectors - fat_size * number_of_fat_tables) / sectors_per_cluster;
+    if (usable_clusters_size > MAX_NUMBER_OF_CLUSTERS_FAT_TABLE) {
+        usable_clusters_size = MAX_NUMBER_OF_CLUSTERS_FAT_TABLE;
+    }
+    usable_fat_table_size = fat_size * SECTORSIZE / FAT_TABLE_ENTRY_SIZE - 2 * FAT_TABLE_ENTRY_SIZE;
+    if (usable_fat_table_size <= usable_clusters_size) {
+        usable_clusters_size = usable_fat_table_size;
+    } else {
+        usable_fat_table_size = usable_clusters_size;
+    }
 
     // Read the second argument 
     // if it is -l, list the contents of the root directory
@@ -227,7 +274,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // With the -c option, your program will create a file named <FILENAME> in the root directory.
+    // With the -c option, the program will create a file named <FILENAME> in the root directory.
     // This file will have a corresponding directory entry, an initial size of 0, 
     // and no blocks allocated for it initially.
     else if (strcmp(argv[2], "-c") == 0) {
@@ -254,15 +301,39 @@ int main(int argc, char* argv[]) {
             printf("Could not create file entry!\n");
             return 0;
         }
-    } else if (strcmp(argv[2], "-w") == 0) {
-
-        // Write string to file
-        // Read the third argument
-        // Read the fourth argument
-        // Read the fifth argument
-        // Read the sixth argument
-        // Write the string to the file
     }
+
+    // With the -w option, the program will write data into the file starting at the offset given in the fifth argument. 
+    // The number of bytes to write is specified by the sixth argument.
+    // The same data byte will be written in consecutive bytes. 
+    // The content of the byte is given by the seventh argument, which is an unsigned integer between 0 and 255.    
+    // For example, if we specify the data as 48 and the length as 10, then 10 consecutive
+    // bytes in hexadecimal will be written: 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30.
+    // This operation can overwrite existing data in the file and add new data, potentially allocating new free clusters to the file.
+    else if (strcmp(argv[2], "-w") == 0) {
+        // Check if the user has entered the correct number of arguments
+        if (argc < 7) {
+            printf("%s", INVALID_ARGUMENTS);
+            return 0;
+        }
+
+        // Read the file name and extension
+        strcpy(input_file_name, argv[3]);
+        to_upper(input_file_name);
+
+        // Read the start offset, length, and the string
+        int start_offset = atoi(argv[4]);
+        int length = atoi(argv[5]);
+        int data = atoi(argv[6]);
+
+        // Write the bytes to the file
+        int result = write_bytes_to_file(fd, start_offset, length, data);
+        if (result == FAILURE) {
+            printf("Could not write bytes to file!\n");
+            return 0;
+        }
+    }
+
     // With the -d option, your program will delete the file named <FILENAME> from the root directory
     // and free the blocks allocated for it in the FAT.
     else if (strcmp(argv[2], "-d") == 0) {
@@ -289,6 +360,153 @@ int main(int argc, char* argv[]) {
     close(fd);
 }
 
+// Write the bytes to the file starting at the given start offset and length with the given data
+// This operation can overwrite existing data in the file and add new data, potentially allocating new free clusters to the file.
+// Data is an unsigned integer between 0 and 255
+// The same data byte will be written in consecutive bytes
+// If the file is empty, the program will allocate a new cluster for the file and update the FAT table
+// If the file is not empty, the program will find the cluster that contains the start offset and write the data
+// If the length is larger than the remaining space in the cluster, the program will allocate a new cluster(s) and update the FAT table
+int write_bytes_to_file(int fd, int start_offset, int length, int data) {
+    // Find the entry with the given file name and extension
+    int directory_entry_index = read_root_directory(fd, FIND_GIVEN_ENTRY);
+    if (directory_entry_index == FAILURE) {
+        printf("File not found!\n");
+        return FAILURE;
+    }
+
+    // Check if the start offset is valid   
+    if (start_offset < 0) {
+        printf("Start offset is invalid!\n Start offset: %d\n", start_offset);
+        return FAILURE;
+    }
+
+    // Check if the start offset is not larger than the file size
+    if (start_offset > file_directory_entry->size) {
+        printf("Start offset is larger than the file size! Start offset: %d, File size: %d\n", start_offset, file_directory_entry->size);
+        return FAILURE;
+    }
+
+    // Find the current cluster size of the file and the clusters needed for the new data
+    int file_cluster_size = file_directory_entry->size / CLUSTERSIZE + (file_directory_entry->size % CLUSTERSIZE != 0);
+    int clusters_needed = (start_offset + length) / CLUSTERSIZE + ((start_offset + length) % CLUSTERSIZE != 0) - file_cluster_size;
+
+    // Get the first cluster of the file by combining the high and low bytes
+    unsigned int current_cluster = file_directory_entry->starthi << 16 | file_directory_entry->start;
+
+    // Allocate new clusters if needed
+    if (clusters_needed > 0) {
+        // Find the last cluster of the file
+        while (current_cluster < FAT_TABLE_END_OF_FILE_VALUE && current_cluster > 1) {
+            current_cluster = get_next_FAT_table_entry(fd, current_cluster);
+        }
+
+        // Allocate new clusters
+        for (int i = 0; i < clusters_needed; i++) {
+            // Find the first free cluster in the FAT table
+            int free_cluster = 0;
+            for (int j = root_directory_cluster_number + N_ROOT_DIRECTORY_CLUSTERS; j < usable_clusters_size; j++) {
+                int fat_table_entry_value = get_next_FAT_table_entry(fd, j);
+                if (fat_table_entry_value == FAT_TABLE_FREE_CLUSTER_VALUE) {
+                    free_cluster = j;
+                    break;
+                }
+            }
+
+            // Check if there is a free cluster
+            if (free_cluster == 0) {
+                printf("No free clusters available!\n");
+                return FAILURE;
+            }
+
+            if (current_cluster == 0) {
+                // Update the first cluster of the file
+                file_directory_entry->starthi = free_cluster >> 16;
+                file_directory_entry->start = free_cluster & 0xFFFF;
+            } else {
+                // Change the end value of the last cluster to the new cluster
+                write_fat_table_entry(fd, current_cluster, free_cluster);
+            }
+
+            // Change the end value of the last cluster to the new cluster
+            write_fat_table_entry(fd, current_cluster, free_cluster);
+            // Change the new cluster to the end of file value
+            write_fat_table_entry(fd, free_cluster, FAT_TABLE_END_OF_FILE_VALUE);   
+
+            // Refresh the current cluster by filling the new cluster with the zeros
+            unsigned char cluster_buffer[CLUSTERSIZE];
+            memset(cluster_buffer, 0, CLUSTERSIZE);
+            write_cluster(fd, cluster_buffer, free_cluster);
+
+            // Update the current cluster
+            current_cluster = free_cluster;
+        }
+
+        // Set the last cluster of the file to the end of file value
+        write_fat_table_entry(fd, current_cluster, FAT_TABLE_END_OF_FILE_VALUE);
+    }
+
+    // Update the file directory entry in the root directory
+
+    // Increase the size of the file if the length + start offset is larger than the file size
+    if (start_offset + length > file_directory_entry->size) {
+        file_directory_entry->size = start_offset + length;
+    }
+
+    // Update the time and date of the file directory entry
+    time_t current_time = time(NULL);
+    struct tm* time_info = localtime(&current_time);
+    file_directory_entry->time = (time_info->tm_hour << 11) | (time_info->tm_min << 5) | (time_info->tm_sec / 2);
+    file_directory_entry->date = ((time_info->tm_year - 80) << 9) | ((time_info->tm_mon + 1) << 5) | time_info->tm_mday;
+    file_directory_entry->adate = ((time_info->tm_year - 80) << 9) | ((time_info->tm_mon + 1) << 5) | time_info->tm_mday;
+
+    // Update the file directory entry in the root directory
+    int result = write_file_directory_entry(fd, directory_entry_index);
+    if (result == FAILURE) {
+        return FAILURE;
+    }
+
+    // Write the data to the file
+
+    // Find the cluster that contains the start offset
+    current_cluster = file_directory_entry->starthi << 16 | file_directory_entry->start;
+    for (int i = 0; i < start_offset / CLUSTERSIZE; i++) {
+        current_cluster = get_next_FAT_table_entry(fd, current_cluster);
+    }
+
+    // Find the offset in the cluster
+    int cluster_offset = start_offset % CLUSTERSIZE;
+
+    // Write the data to the file
+    unsigned char cluster_buffer[CLUSTERSIZE];
+    for (int i = 0; i < length; i++) {
+        // Read the cluster
+        read_cluster(fd, cluster_buffer, current_cluster);
+
+        // Write the data to the cluster
+        cluster_buffer[cluster_offset] = data;
+
+        // Update the cluster offset
+        cluster_offset++;
+
+        // Check if the cluster offset is equal to the cluster size
+        // If it is, write the cluster to the disk image and get the next cluster
+        if (cluster_offset == CLUSTERSIZE) {
+            // Write the cluster
+            write_cluster(fd, cluster_buffer, current_cluster);
+
+            cluster_offset = 0;
+            current_cluster = get_next_FAT_table_entry(fd, current_cluster);
+        }
+    }
+
+    // Write the last cluster to the disk image
+    write_cluster(fd, cluster_buffer, current_cluster);
+
+    printf("Bytes written to the file successfully!\n");
+    return SUCCESS;
+}
+
 // Delete the file named with given input in the root directory, and free the blocks allocated for it in the FAT
 int delete_file(int fd) {
     // Find the entry with the given file name and extension
@@ -304,15 +522,8 @@ int delete_file(int fd) {
 
     // Free the blocks allocated for the file in the FAT in a loop
     while (current_cluster < FAT_TABLE_END_OF_FILE_VALUE && current_cluster > 1) {
-        // Free the current cluster in the FAT table by setting it to 0
-        int_to_bytes_little_endian(0, fat_table_entry);
-
-        // Calculate the offset
-        off_t offset = reserved_sectors * SECTORSIZE + current_cluster * FAT_TABLE_ENTRY_SIZE;
-
-        lseek(fd, offset, SEEK_SET);
-        int result = write(fd, fat_table_entry, FAT_TABLE_ENTRY_SIZE);
-        fsync(fd);
+        // Free the current cluster in the FAT table
+        write_fat_table_entry(fd, current_cluster, FAT_TABLE_FREE_CLUSTER_VALUE);
 
         // Get the next cluster
         current_cluster = next_cluster;
@@ -409,19 +620,7 @@ int create_file_entry(int fd) {
     file_directory_entry->size = 0;
 
     // Write the file directory entry to the root directory
-    off_t offset = reserved_sectors * SECTORSIZE
-        + fat_size * number_of_fat_tables * SECTORSIZE
-        + free_root_directory_entry_index * FILE_DIRECTORY_ENTRY_SIZE;
-    lseek(fd, offset, SEEK_SET);
-
-    int result = write(fd, file_directory_entry_raw, FILE_DIRECTORY_ENTRY_SIZE);
-    fsync(fd);
-
-    if (result < 0) {
-        return FAILURE;
-    }
-
-    return SUCCESS;
+    return write_file_directory_entry(fd, free_root_directory_entry_index);
 }
 
 // Function to read the file in binary or ASCII, following the steps below:
@@ -491,7 +690,7 @@ void read_file(int fd, int is_binary) {
         next_cluster = get_next_FAT_table_entry(fd, current_cluster);
     }
 
-
+    printf("\nSuccesfully read!\n");
 }
 
 // Function to get the next FAT table entry
@@ -502,23 +701,22 @@ int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
     lseek(fd, offset, SEEK_SET);
 
     // Read the FAT table entry
-    int result = read(fd, fat_table_entry, 4);
+    int result = read(fd, fat_table_entry, FAT_TABLE_ENTRY_SIZE);
 
     if (result < 0) {
         return FAILURE;
     }
 
     // Convert the FAT table entry to an integer
-    int next_cluster = bytes_to_int_little_endian(fat_table_entry);
+    int next_cluster = bytes_to_int(fat_table_entry, FAT_TABLE_ENTRY_SIZE);
     return next_cluster;
 }
 
-// Read the contents of the root directory
-// Read the root directory from the disk image which is stored in the second cluster
+// Read the contents of the root directory which is stored in the second cluster
 // For simplicity, we will assume that the root directory is one cluster in size
-// Traverse every entry in the root directory
-// If the option option is set LIST_DIRECTORIES, print the file name and extension
-// If the option option is set FIND_FREE_ENTRY, find the first free entry in the root directory
+// Traverse every entry in the root directory and do the following:
+// If the option option is set LIST_DIRECTORIES and valid, print the file name and extension
+// If the option option is set FIND_FREE_ENTRY and empty, find the first free entry in the root directory and return the index of the entry
 // Else(FIND_GIVEN_ENTRY), find the entry with the given file name and extension
 // and set the file_directory_entry pointer to that entry, return the index of the entry, if not found return FAILURE
 int read_root_directory(int fd, int option) {
@@ -606,10 +804,11 @@ int read_root_directory(int fd, int option) {
     }
 }
 
-// Function to read a cluster from the disk image
+// Read a cluster from the disk image
 int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number) {
     // Calculate the offset
-    off_t offset = (reserved_sectors + fat_size * boot_sector->fats + (cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
+    off_t offset = (reserved_sectors + fat_size * number_of_fat_tables
+        + (cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
     lseek(fd, offset, SEEK_SET);
 
     // Read the cluster
@@ -622,7 +821,7 @@ int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number) {
     }
 }
 
-// Function to read a sector from the disk image    
+// Read a sector from the disk image    
 int read_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
     // Calculate the offset
     off_t offset = sector_number * SECTORSIZE;
@@ -638,7 +837,25 @@ int read_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
     }
 }
 
-// Function to write a sector to the disk image
+// Write a cluster to the disk image
+int write_cluster(int fd, unsigned char* buffer, unsigned int cluster_number) {
+    // Calculate the offset
+    off_t offset = (reserved_sectors + fat_size * number_of_fat_tables
+        + (cluster_number - 2) * sectors_per_cluster) * SECTORSIZE;
+    lseek(fd, offset, SEEK_SET);
+
+    // Write the cluster
+    int result = write(fd, buffer, SECTORSIZE * sectors_per_cluster);
+    fsync(fd);
+
+    if (result == SECTORSIZE * sectors_per_cluster) {
+        return SUCCESS;
+    } else {
+        return FAILURE;
+    }
+}
+
+// Write a sector to the disk image
 int write_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
     // Calculate the offset
     off_t offset = sector_number * SECTORSIZE;
@@ -653,6 +870,45 @@ int write_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
     } else {
         return FAILURE;
     }
+}
+
+// Write a fat table entry to the disk image
+int write_fat_table_entry(int fd, unsigned int cluster_number, unsigned int value) {
+    // Calculate the offset
+    off_t offset = reserved_sectors * SECTORSIZE + cluster_number * FAT_TABLE_ENTRY_SIZE;
+    lseek(fd, offset, SEEK_SET);
+
+    // Convert the value to 4 bytes in little-endian order
+    int_to_bytes(value, fat_table_entry);
+
+    // Write the FAT table
+    int result = write(fd, fat_table_entry, FAT_TABLE_ENTRY_SIZE);
+    fsync(fd);
+
+    if (result == FAT_TABLE_ENTRY_SIZE) {
+        return SUCCESS;
+    } else {
+        return FAILURE;
+    }
+}
+
+// Write the file directory entry to the root directory 
+int write_file_directory_entry(int fd, int directory_entry_index) {
+    // Calculate the offset
+    off_t offset = reserved_sectors * SECTORSIZE
+        + fat_size * number_of_fat_tables * SECTORSIZE
+        + directory_entry_index * FILE_DIRECTORY_ENTRY_SIZE;
+    lseek(fd, offset, SEEK_SET);
+
+    // Write the file directory entry to the root directory
+    int result = write(fd, file_directory_entry_raw, FILE_DIRECTORY_ENTRY_SIZE);
+    fsync(fd);
+
+    if (result < 0) {
+        return FAILURE;
+    }
+
+    return SUCCESS;
 }
 
 // Function to print the help message about the usage of the program
@@ -678,16 +934,17 @@ int char_overflow_check(int value) {
 }
 
 // Convert 4 bytes to an integer in little-endian order
-int bytes_to_int_little_endian(char* bytes) {
-    return (int) (char_overflow_check(bytes[0])) |
-        (int) (char_overflow_check(bytes[1])) << 8 |
-        (int) (char_overflow_check(bytes[2])) << 16 |
-        (int) (char_overflow_check(bytes[3])) << 24;
+int bytes_to_int(char* bytes, int length) {
+    int value = 0;
+    for (int i = 0; i < length; i++) {
+        value |= (int) (char_overflow_check(bytes[i])) << (i * 8);
+    }
+    return value;
 }
 
 // Convert an integer to 4 bytes in little-endian order
 // Fill the 4 bytes with the integer value
-void int_to_bytes_little_endian(int val, char* bytes) {
+void int_to_bytes(int val, char* bytes) {
     bytes[0] = (char) (val & 0xFF);
     bytes[1] = (char) ((val >> 8) & 0xFF);
     bytes[2] = (char) ((val >> 16) & 0xFF);
