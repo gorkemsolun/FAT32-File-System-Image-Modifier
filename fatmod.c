@@ -9,6 +9,7 @@
 
 // TODOs:
 // Convert read by cluster to read by sector // NOTE: This may not be necessary
+// Check if the root directory is full before creating a new file
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,11 +27,14 @@
 // ___Definitions___
 
 #define FAILURE -1
-#define SUCCESS 0   
-#define FALSE 0
-#define TRUE 1
+#define SUCCESS 0
 #define INVALID_ARGUMENTS "Invalid arguments. Please enter -h for help\n"
 #define FAT_TABLE_END_OF_FILE_VALUE 0x0FFFFFF8
+
+// Options of the root directory function
+#define FIND_GIVEN_ENTRY 0
+#define LIST_DIRECTORIES 1
+#define FIND_FREE_ENTRY 2
 
 #define SECTORSIZE 512   // bytes
 #define CLUSTERSIZE  1024  // bytes
@@ -50,14 +54,15 @@
 
 // ___Function Prototypes___
 
-// Main Functions
 // read the root directory from the disk image which is stored in the second cluster
-void read_root_directory(int fd, int is_list_directories);
+int read_root_directory(int fd, int is_list_directories);
 // read the file in binary or ASCII
 void read_file(int fd, int is_binary);
+// create a file named with given input in the root directory
+int create_file_entry(int fd);
+// print the help message about the usage of the program
 void print_help_message();
 
-// Helper Functions 
 int read_sector(int fd, unsigned char* buffer, unsigned int snum);
 int write_sector(int fd, unsigned char* buffer, unsigned int snum);
 int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number);
@@ -78,16 +83,21 @@ int fat_table_offset; // in sectors
 int root_directory_cluster_number;
 int sectors_per_cluster;
 unsigned char boot_sector_raw[SECTORSIZE];
+// Used for reading the root directory, which is stored in the second cluster
 unsigned char root_directory[CLUSTERSIZE];
 unsigned char file_directory_entry_raw[FILE_DIRECTORY_ENTRY_SIZE];
-unsigned char fat_table_entry[4];
+// Used for reading the FAT table entry
+unsigned char fat_table_entry[FAT_TABLE_ENTRY_SIZE];
+// Used for reading the root directory, file name + dot + extension
+char total_file_name[TOTAL_FILENAME_SIZE + DOT_SIZE];
+// Given input file name
 char input_file_name[TOTAL_FILENAME_SIZE];
 
 struct fat_boot_sector* boot_sector;
 struct msdos_dir_entry* file_directory_entry;
 
 
-// ___Main Functions Start Here___
+// ___Function Implementations___
 
 // Main function will read the given input once and given input will be executed
 // Example invocations are:
@@ -105,12 +115,16 @@ struct msdos_dir_entry* file_directory_entry;
 */
 int main(int argc, char* argv[]) {
     // BELOW ARE FOR TESTING PURPOSES
-    /* char* test_argv[] = { "fatmod", "disk1", "-l" };
-    argc = 3; */
+    char* test_argv[] = { "fatmod", "disk1", "-l" };
+    argc = 3;
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
     argc = 5; */
-    char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
-    argc = 5;
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
+    argc = 5; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileA.txt" };
+    argc = 4; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileB.txt" };
+    argc = 4; */
     argv = test_argv;
 
     // Check if the user has entered the correct number of arguments
@@ -168,8 +182,14 @@ int main(int argc, char* argv[]) {
     // Read the second argument 
     // if it is -l, list the contents of the root directory
     if (strcmp(argv[2], "-l") == 0) {
-        read_root_directory(fd, 1);
-    } else if (strcmp(argv[2], "-r") == 0) {
+        int result = read_root_directory(fd, LIST_DIRECTORIES);
+        if (result == FAILURE) {
+            printf("Could not read root directory!\n");
+        }
+    }
+
+    // if it is -r, read the file in binary or ASCII
+    else if (strcmp(argv[2], "-r") == 0) {
         // Check if the user has entered the correct number of arguments
         if (argc < 4) {
             printf("%s", INVALID_ARGUMENTS);
@@ -191,11 +211,29 @@ int main(int argc, char* argv[]) {
             printf("%s", INVALID_ARGUMENTS);
             return 0;
         }
-    } else if (strcmp(argv[2], "-c") == 0) {
+    }
 
-        // Create a new file
-        // Read the third argument
-        // Create a new file
+    // With the -c option, your program will create a file named <FILENAME> in the root directory.
+    // This file will have a corresponding directory entry, an initial size of 0, 
+    // and no blocks allocated for it initially.
+    else if (strcmp(argv[2], "-c") == 0) {
+        // Read the file name and extension
+        strcpy(input_file_name, argv[3]);
+        to_upper(input_file_name);
+
+        // Check if there exists a same file in the root directory
+        int result = read_root_directory(fd, FIND_GIVEN_ENTRY);
+        if (result == SUCCESS) {
+            printf("File already exists!\n");
+            return 0;
+        }
+
+        // Create a file named with given input in the root directory
+        result = create_file_entry(fd);
+        if (result == FAILURE) {
+            printf("Could not create file entry!\n");
+            return 0;
+        }
     } else if (strcmp(argv[2], "-w") == 0) {
 
         // Write string to file
@@ -215,6 +253,89 @@ int main(int argc, char* argv[]) {
     close(fd);
 }
 
+// Creates a file named with given input in the root directory. This file will have a
+// corresponding directory entry, an initial size of 0, and no blocks allocated for it initially.
+int create_file_entry(int fd) {
+    // Find the first free entry in the root directory
+    int free_root_directory_entry_index = read_root_directory(fd, FIND_FREE_ENTRY);
+    if (free_root_directory_entry_index == FAILURE) {
+        printf("Root directory is full!\n");
+        return FAILURE;
+    }
+
+    // BELOW ARE FOR TESTING PURPOSES
+    struct msdos_dir_entry* new_file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
+
+    // Create a new file directory entry for FAT32 file system
+    memset(file_directory_entry_raw, 0, FILE_DIRECTORY_ENTRY_SIZE);
+
+    // First 8 bytes are for the file name, find the length of the file name until the dot
+    // copy the file name to the file directory entry
+    int is_dot_found = 0;
+    int input_file_name_index = 0;
+    for (int i = 0; i < FILENAME_SIZE; i++) {
+        if (input_file_name[input_file_name_index] == '.') {
+            is_dot_found = 1;
+            input_file_name_index++;
+        }
+        if (is_dot_found) {
+            file_directory_entry->name[i] = ' ';
+        } else {
+            file_directory_entry->name[i] = input_file_name[input_file_name_index++];
+        }
+    }
+    // Copy the file extension to the file directory entry
+    for (int i = FILENAME_SIZE; i < TOTAL_FILENAME_SIZE; i++) {
+        if (input_file_name[input_file_name_index] == '\0') {
+            break;
+        }
+        file_directory_entry->name[i] = input_file_name[input_file_name_index++];
+    }
+
+    // Set the attribute of the file directory entry
+    file_directory_entry->attr = 0x20;
+
+    // Set the creation time, date, last access date
+    time_t current_time = time(NULL);
+    struct tm* time_info = localtime(&current_time);
+    // Set the creation time
+    // TODO: centiseconds are not set
+    file_directory_entry->ctime_cs = 0;
+    file_directory_entry->ctime = (time_info->tm_hour << 11) | (time_info->tm_min << 5) | (time_info->tm_sec / 2);
+    // Set the creation date
+    file_directory_entry->cdate = ((time_info->tm_year - 80) << 9) | ((time_info->tm_mon + 1) << 5) | time_info->tm_mday;
+    // Set the last access date
+    file_directory_entry->adate = ((time_info->tm_year - 80) << 9) | ((time_info->tm_mon + 1) << 5) | time_info->tm_mday;
+
+    // Set high start cluster, initially set to 0
+    file_directory_entry->starthi = 0;
+
+    // Set last write time, date
+    file_directory_entry->time = (time_info->tm_hour << 11) | (time_info->tm_min << 5) | (time_info->tm_sec / 2);
+    file_directory_entry->date = ((time_info->tm_year - 80) << 9) | ((time_info->tm_mon + 1) << 5) | time_info->tm_mday;
+
+    // Set start cluster, initially set to 0
+    file_directory_entry->start = 0;
+
+    // Set the size of the file, initially set to 0
+    file_directory_entry->size = 0;
+
+    // Write the file directory entry to the root directory
+    off_t offset = reserved_sectors * SECTORSIZE
+        + fat_size * number_of_fat_tables * SECTORSIZE
+        + free_root_directory_entry_index * FILE_DIRECTORY_ENTRY_SIZE;
+    lseek(fd, offset, SEEK_SET);
+
+    int result = write(fd, file_directory_entry_raw, FILE_DIRECTORY_ENTRY_SIZE);
+    fsync(fd);
+
+    if (result < 0) {
+        return FAILURE;
+    }
+
+    return SUCCESS;
+}
+
 // Function to read the file in binary or ASCII, following the steps below:
 // - Read the root directory to get the file directory entry
 // - Get the first cluster of the file by combining the high and low bytes
@@ -223,27 +344,15 @@ int main(int argc, char* argv[]) {
 // - Read cluster by cluster from the disk image and print the contents of the file in binary or ASCII in sectors
 void read_file(int fd, int is_binary) {
     // Read the root directory to get the file directory entry
-    read_root_directory(fd, 0);
-    if (file_directory_entry->name[0] == 0x00 || file_directory_entry->name[0] == 0xE5) {
+    int result = read_root_directory(fd, FIND_GIVEN_ENTRY);
+    if (result == FAILURE) {
         printf("File not found!\n");
         return;
     }
 
-    // BELOW ARE FOR TESTING PURPOSES
-    struct msdos_dir_entry* temp = file_directory_entry;
-    temp = (struct msdos_dir_entry*) file_directory_entry_raw;
-    printf("\nStart: %d\n", file_directory_entry->start);
-    printf("\nStartHi: %d\n", file_directory_entry->starthi);
-    printf("\nSize: %d\n", file_directory_entry->size);
-
-
     // Get the first cluster of the file by combining the high and low bytes
     unsigned int current_cluster = file_directory_entry->starthi << 16 | file_directory_entry->start;
     unsigned int next_cluster = get_next_FAT_table_entry(fd, current_cluster);
-
-    // BELOW ARE FOR TESTING PURPOSES
-    printf("\nCurrent Cluster: %d\n", current_cluster);
-    printf("\nNext Cluster: %d\n", next_cluster);
 
     // Start reading the file as a chain of clusters starting from the first cluster until the end of the file
     // Read cluster by cluster from the disk image
@@ -254,7 +363,7 @@ void read_file(int fd, int is_binary) {
             printf("\n");
             break;
         }
-        
+
         // Read the cluster
         read_cluster(fd, cluster_buffer, current_cluster);
 
@@ -305,9 +414,9 @@ int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
     lseek(fd, offset, SEEK_SET);
 
     // Read the FAT table entry
-    int n = read(fd, fat_table_entry, 4);
+    int result = read(fd, fat_table_entry, 4);
 
-    if (n < 0) {
+    if (result < 0) {
         return FAILURE;
     }
 
@@ -320,11 +429,15 @@ int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
 // Read the root directory from the disk image which is stored in the second cluster
 // For simplicity, we will assume that the root directory is one cluster in size
 // Traverse every entry in the root directory
-// If the is_list_directories flag is set, print the file name and extension
-// Else, find the entry with the given file name and extension
-void read_root_directory(int fd, int is_list_directories) {
+// If the option option is set LIST_DIRECTORIES, print the file name and extension
+// If the option option is set FIND_FREE_ENTRY, find the first free entry in the root directory
+// Else(FIND_GIVEN_ENTRY), find the entry with the given file name and extension
+int read_root_directory(int fd, int option) {
     // Read the root directory from the disk image
-    read_cluster(fd, root_directory, root_directory_cluster_number);
+    int result = read_cluster(fd, root_directory, root_directory_cluster_number);
+    if (result < 0) {
+        return FAILURE;
+    }
 
     // Traverse every entry in the root directory
     // Skip the first entry because it is the volume label
@@ -336,17 +449,19 @@ void read_root_directory(int fd, int is_list_directories) {
         // Check if the file is a valid file
         if (file_directory_entry->name[0] == 0x00 || file_directory_entry->name[0] == 0xE5) {
             // This entry is free or deleted
-            // TODO: handle this case
-            continue;
+            // If the option is FIND_FREE_ENTRY, return the index of first free entry
+            if (option == FIND_FREE_ENTRY) {
+                return i;
+            }
         } else if (file_directory_entry->attr == 0x0F) {
             // This entry is a long file name entry
             // This project does not support long file names
+            printf("WARNING: Detected long file name entry. Long file name entries are not supported!\n");
             continue;
-        } else {
+        } else if (file_directory_entry->attr == 0x20) {
             // This entry is a valid file
             // Get the file name and extension by inserting a dot between them
             // File name is 11 bytes long consisting of 8 bytes for the name and 3 bytes for the extension
-            char total_file_name[TOTAL_FILENAME_SIZE + DOT_SIZE];
             memset(total_file_name, '\0', TOTAL_FILENAME_SIZE + DOT_SIZE);
 
             // Loop through the file name and extension but only get the following characters
@@ -373,8 +488,8 @@ void read_root_directory(int fd, int is_list_directories) {
                 }
             }
 
-            // Print the file name and extension if the is_list_directories flag is set
-            if (is_list_directories) {
+            // Print the file name and extension if the LIST_DIRECTORIES option is set
+            if (option == LIST_DIRECTORIES) {
                 // Print the file name and extension
                 printf("%s\n", total_file_name);
             } else {
@@ -387,10 +502,19 @@ void read_root_directory(int fd, int is_list_directories) {
                 // If they match, break the loop
                 // If they do not match, set the file_directory_entry pointer to NULL
                 if (strcmp(total_file_name, input_file_name) == 0) {
-                    break;
+                    return SUCCESS;
                 }
             }
+        } else {
+            // This entry is invalid
+            printf("WARNING: Detected invalid entry!\n");
         }
+    }
+
+    if (option == LIST_DIRECTORIES) {
+        return SUCCESS;
+    } else {
+        return FAILURE;
     }
 }
 
@@ -401,9 +525,9 @@ int read_cluster(int fd, unsigned char* buffer, unsigned int cluster_number) {
     lseek(fd, offset, SEEK_SET);
 
     // Read the cluster
-    int n = read(fd, buffer, SECTORSIZE * sectors_per_cluster);
+    int result = read(fd, buffer, SECTORSIZE * sectors_per_cluster);
 
-    if (n == SECTORSIZE * sectors_per_cluster) {
+    if (result == SECTORSIZE * sectors_per_cluster) {
         return SUCCESS;
     } else {
         return FAILURE;
@@ -417,9 +541,9 @@ int read_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
     lseek(fd, offset, SEEK_SET);
 
     // Read the sector
-    int n = read(fd, buffer, SECTORSIZE);
+    int result = read(fd, buffer, SECTORSIZE);
 
-    if (n == SECTORSIZE) {
+    if (result == SECTORSIZE) {
         return SUCCESS;
     } else {
         return FAILURE;
@@ -433,16 +557,17 @@ int write_sector(int fd, unsigned char* buffer, unsigned int sector_number) {
     lseek(fd, offset, SEEK_SET);
 
     // Write the sector
-    int n = write(fd, buffer, SECTORSIZE);
+    int result = write(fd, buffer, SECTORSIZE);
     fsync(fd);
 
-    if (n == SECTORSIZE) {
+    if (result == SECTORSIZE) {
         return SUCCESS;
     } else {
         return FAILURE;
     }
 }
 
+// Function to print the help message about the usage of the program
 void print_help_message() {
     printf("Usage: fatmod <diskname> <options>\n");
     printf("Options:\n");
@@ -454,8 +579,6 @@ void print_help_message() {
     printf("-r -a <file>: Read and print the file in ASCII\n");
     printf("-d <file>: Delete the file\n");
 }
-
-// ___Helper Functions Start Here___
 
 // Check if the value is negative, if it is, convert it to a positive value
 // This function is used to handle the overflow of the char type
