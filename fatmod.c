@@ -60,6 +60,8 @@ int read_root_directory(int fd, int is_list_directories);
 void read_file(int fd, int is_binary);
 // create a file named with given input in the root directory
 int create_file_entry(int fd);
+// delete the file named with given input in the root directory, and free the blocks allocated for it in the FAT
+int delete_file(int fd);
 // print the help message about the usage of the program
 void print_help_message();
 
@@ -119,11 +121,23 @@ int main(int argc, char* argv[]) {
     argc = 3;
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
     argc = 5; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file6.bin" };
+    argc = 5; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file2.bin" };
+    argc = 5; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file3.bin" };
+    argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
     argc = 5; */
     /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileA.txt" };
     argc = 4; */
     /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileB.txt" };
+    argc = 4; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-d", "fileA.txt" };
+    argc = 4; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-d", "file4.txt" };
+    argc = 4; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-d", "file5.txt" };
     argc = 4; */
     argv = test_argv;
 
@@ -217,13 +231,19 @@ int main(int argc, char* argv[]) {
     // This file will have a corresponding directory entry, an initial size of 0, 
     // and no blocks allocated for it initially.
     else if (strcmp(argv[2], "-c") == 0) {
+        // Check if the user has entered the correct number of arguments
+        if (argc < 4) {
+            printf("%s", INVALID_ARGUMENTS);
+            return 0;
+        }
+
         // Read the file name and extension
         strcpy(input_file_name, argv[3]);
         to_upper(input_file_name);
 
         // Check if there exists a same file in the root directory
         int result = read_root_directory(fd, FIND_GIVEN_ENTRY);
-        if (result == SUCCESS) {
+        if (result != FAILURE) {
             printf("File already exists!\n");
             return 0;
         }
@@ -242,15 +262,83 @@ int main(int argc, char* argv[]) {
         // Read the fifth argument
         // Read the sixth argument
         // Write the string to the file
-    } else if (strcmp(argv[2], "-d") == 0) {
+    }
+    // With the -d option, your program will delete the file named <FILENAME> from the root directory
+    // and free the blocks allocated for it in the FAT.
+    else if (strcmp(argv[2], "-d") == 0) {
+        // Check if the user has entered the correct number of arguments
+        if (argc < 4) {
+            printf("%s", INVALID_ARGUMENTS);
+            return 0;
+        }
+
+        // Read the file name and extension
+        strcpy(input_file_name, argv[3]);
+        to_upper(input_file_name);
+
         // Delete the file
-        // Read the third argument
-        // Delete the file
+        int result = delete_file(fd);
+        if (result == FAILURE) {
+            printf("Could not delete file!\n");
+            return 0;
+        }
     } else {
         printf("%s", INVALID_ARGUMENTS);
     }
 
     close(fd);
+}
+
+// Delete the file named with given input in the root directory, and free the blocks allocated for it in the FAT
+int delete_file(int fd) {
+    // Find the entry with the given file name and extension
+    int directory_entry_index = read_root_directory(fd, FIND_GIVEN_ENTRY);
+    if (directory_entry_index == FAILURE) {
+        printf("File not found!\n");
+        return FAILURE;
+    }
+
+    // Get the first cluster of the file by combining the high and low bytes
+    unsigned int current_cluster = file_directory_entry->starthi << 16 | file_directory_entry->start;
+    unsigned int next_cluster = get_next_FAT_table_entry(fd, current_cluster);
+
+    // Free the blocks allocated for the file in the FAT in a loop
+    while (current_cluster < FAT_TABLE_END_OF_FILE_VALUE && current_cluster > 1) {
+        // Free the current cluster in the FAT table by setting it to 0
+        int_to_bytes_little_endian(0, fat_table_entry);
+
+        // Calculate the offset
+        off_t offset = reserved_sectors * SECTORSIZE + current_cluster * FAT_TABLE_ENTRY_SIZE;
+
+        lseek(fd, offset, SEEK_SET);
+        int result = write(fd, fat_table_entry, FAT_TABLE_ENTRY_SIZE);
+        fsync(fd);
+
+        // Get the next cluster
+        current_cluster = next_cluster;
+        next_cluster = get_next_FAT_table_entry(fd, current_cluster);
+    }
+
+    // Delete the file directory entry by setting the first byte to 0xE5
+    file_directory_entry->name[0] = 0xE5;
+    // Calculate the offset
+    off_t offset = reserved_sectors * SECTORSIZE
+        + fat_size * number_of_fat_tables * SECTORSIZE
+        + directory_entry_index * FILE_DIRECTORY_ENTRY_SIZE;
+    // Update the file directory entry in the root directory
+    lseek(fd, offset, SEEK_SET);
+
+    // Write the beginning of the file directory entry to the root directory
+    int result = write(fd, file_directory_entry_raw, 2);
+    // Write the rest of the file directory entry to the root directory
+    fsync(fd);
+
+    if (result < 0) {
+        return FAILURE;
+    }
+
+    printf("File deleted successfully!\n");
+    return SUCCESS;
 }
 
 // Creates a file named with given input in the root directory. This file will have a
@@ -432,6 +520,7 @@ int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
 // If the option option is set LIST_DIRECTORIES, print the file name and extension
 // If the option option is set FIND_FREE_ENTRY, find the first free entry in the root directory
 // Else(FIND_GIVEN_ENTRY), find the entry with the given file name and extension
+// and set the file_directory_entry pointer to that entry, return the index of the entry, if not found return FAILURE
 int read_root_directory(int fd, int option) {
     // Read the root directory from the disk image
     int result = read_cluster(fd, root_directory, root_directory_cluster_number);
@@ -499,10 +588,9 @@ int read_root_directory(int fd, int option) {
                 // If the entry is found, break the loop
 
                 // Check if the file name and extension match the given file name and extension
-                // If they match, break the loop
-                // If they do not match, set the file_directory_entry pointer to NULL
+                // If they match, return the index of the entry
                 if (strcmp(total_file_name, input_file_name) == 0) {
-                    return SUCCESS;
+                    return i;
                 }
             }
         } else {
@@ -598,6 +686,7 @@ int bytes_to_int_little_endian(char* bytes) {
 }
 
 // Convert an integer to 4 bytes in little-endian order
+// Fill the 4 bytes with the integer value
 void int_to_bytes_little_endian(int val, char* bytes) {
     bytes[0] = (char) (val & 0xFF);
     bytes[1] = (char) ((val >> 8) & 0xFF);
