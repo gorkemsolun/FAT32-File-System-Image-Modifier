@@ -85,10 +85,11 @@ int get_next_FAT_table_entry(int fd, unsigned int cluster_number);
 
 int char_overflow_check(int value);
 int bytes_to_int(char* bytes, int length);
+int unsigned_bytes_to_int(unsigned char* bytes, int length);
 void int_to_bytes(int val, char* bytes);
+void int_to_unsigned_bytes(int val, unsigned char* bytes);
 
-void to_upper(char* str);
-int check_file_name(char* str);
+int check_set_file_name(char* str);
 int get_length_of_file_name(char* str);
 
 
@@ -144,34 +145,20 @@ int main(int argc, char* argv[]) {
     // BELOW ARE FOR TESTING PURPOSES
     /* char* test_argv[] = { "fatmod", "disk1", "-l" };
     argc = 3; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file1.bin" };
+    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "31_31t.ge1" };
     argc = 5; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file6.bin" };
-    argc = 5; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file2.bin" };
-    argc = 5; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "file3.bin" };
-    argc = 5; */
-    char* test_argv[] = { "fatmod", "disk1", "-r", "-a", "file4.txt" };
-    argc = 5;
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "fileB.bin" };
-    argc = 5; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileA.txt" };
-    argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileB.txt" };
-    argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-c", "fileB.bin" };
+    /* char* test_argv[] = { "fatmod", "disk1", "-c", "31_31t.ge1" };
     argc = 4; */
     /* char* test_argv[] = { "fatmod", "disk1", "-d", "fileA.txt" };
     argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-d", "file4.txt" };
-    argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-d", "file5.txt" };
-    argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-w", "fileB.bin", "0", "5000", "31" };
+    /* char* test_argv[] = { "fatmod", "disk1", "-w", "31_31t.ge1", "0", "5000", "76" };
     argc = 7; */
-
-    argv = test_argv;
+    /* char* test_argv[] = { "fatmod", "disk1", "-w", "31_31t.ge1", "3131", "10000", "75" };
+    argc = 7; */
+    /* char* test_argv[] = { "fatmod", "disk1", "-w", "31_31t.ge1", "1", "10000", "76" };
+    argc = 7; */
+    /* argv = test_argv; */
+    // ABOVE ARE FOR TESTING PURPOSES
 
     // Check if the user has entered the correct number of arguments
     if (argc == 2) {
@@ -224,7 +211,7 @@ int main(int argc, char* argv[]) {
     if (number_of_fat_tables != N_FAT_TABLES) {
         printf("WARNING: Number of FAT tables is not %d!\n", N_FAT_TABLES);
     }
-    sector_size = bytes_to_int(boot_sector->sector_size, 2);
+    sector_size = unsigned_bytes_to_int(boot_sector->sector_size, 2);
     if (sector_size != SECTORSIZE) {
         printf("WARNING: Sector size is not %d! It is %d.\n", SECTORSIZE, sector_size);
     }
@@ -267,9 +254,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Read the file name and extension and check if the file name is valid
+        // Set the file name to the global variable
         strcpy(input_file_name, argv[4]);
-        to_upper(input_file_name);
-        check_file_name(input_file_name);
+        int result = check_set_file_name(input_file_name);
+        if (result == FAILURE) {
+            printf("File name is invalid!\n");
+            return 0;
+        }
 
         // Read the file in binary or ASCII
         if (strcmp(argv[3], "-b") == 0) {
@@ -295,12 +286,16 @@ int main(int argc, char* argv[]) {
         }
 
         // Read the file name and extension and check if the file name is valid 
+        // Set the file name to the global variable
         strcpy(input_file_name, argv[3]);
-        to_upper(input_file_name);
-        check_file_name(input_file_name);
+        int result = check_set_file_name(input_file_name);
+        if (result == FAILURE) {
+            printf("File name is invalid!\n");
+            return 0;
+        }
 
         // Create a file named with given input in the root directory
-        int result = create_file_entry(fd);
+        result = create_file_entry(fd);
         if (result == FAILURE) {
             printf("Could not create file entry!\n");
             return 0;
@@ -324,9 +319,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Read the file name and extension and check if the file name is valid
+        // Set the file name to the global variable
         strcpy(input_file_name, argv[3]);
-        to_upper(input_file_name);
-        check_file_name(input_file_name);
+        int result = check_set_file_name(input_file_name);
+        if (result == FAILURE) {
+            printf("File name is invalid!\n");
+            return 0;
+        }
 
         // Read the start offset, length, and the string
         int start_offset = atoi(argv[4]);
@@ -334,7 +333,7 @@ int main(int argc, char* argv[]) {
         int data = atoi(argv[6]);
 
         // Write the bytes to the file
-        int result = write_bytes_to_file(fd, start_offset, length, data);
+        result = write_bytes_to_file(fd, start_offset, length, data);
         if (result == FAILURE) {
             printf("Could not write bytes to file!\n");
             return 0;
@@ -351,12 +350,16 @@ int main(int argc, char* argv[]) {
         }
 
         // Read the file name and extension and check if the file name is valid
+        // Set the file name to the global variable
         strcpy(input_file_name, argv[3]);
-        to_upper(input_file_name);
-        check_file_name(input_file_name);
+        int result = check_set_file_name(input_file_name);
+        if (result == FAILURE) {
+            printf("File name is invalid!\n");
+            return 0;
+        }
 
         // Delete the file
-        int result = delete_file(fd);
+        result = delete_file(fd);
         if (result == FAILURE) {
             printf("Could not delete file!\n");
             return 0;
@@ -405,7 +408,7 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
     // Allocate new clusters if needed
     if (clusters_needed > 0) {
         // Find the last cluster of the file
-        while (current_cluster < FAT_TABLE_END_OF_FILE_VALUE && current_cluster > 1) {
+        for (int i = 0; i < file_cluster_size - 1; i++) {
             current_cluster = get_next_FAT_table_entry(fd, current_cluster);
         }
 
@@ -439,10 +442,11 @@ int write_bytes_to_file(int fd, int start_offset, int length, int data) {
             // Change the new cluster to the end of file value
             write_fat_table_entry(fd, free_cluster, FAT_TABLE_END_OF_FILE_VALUE);
 
-            // Refresh the current cluster by filling the new cluster with the zeros
+            // NOTE: This part is not necessary
+            /* // Refresh the current cluster by filling the new cluster with the zeros
             unsigned char cluster_buffer[CLUSTERSIZE];
             memset(cluster_buffer, 0, CLUSTERSIZE);
-            write_cluster(fd, cluster_buffer, free_cluster);
+            write_cluster(fd, cluster_buffer, free_cluster); */
 
             // Update the current cluster
             current_cluster = free_cluster;
@@ -563,7 +567,7 @@ int create_file_entry(int fd) {
     int result = read_root_directory(fd, FIND_GIVEN_ENTRY);
     if (result != FAILURE) {
         printf("File already exists!\n");
-        return 0;
+        return FAILURE;
     }
 
     // Find the first free entry in the root directory
@@ -669,39 +673,37 @@ void read_file(int fd, int is_binary) {
         // With each line printing 16 bytes.The first hexadecimal number indicates the start
         // offset of that line in the file.
         // In ASCII form: It will display the content of the file in ASCII form on the screen.
-        for (int j = 0; j < CLUSTERSIZE / SECTOR_SIZE; j++) {
+        if (is_binary) {
             // Print the contents of the file in binary
-            if (is_binary) {
-                // Print the current sector
-                for (int k = 0; k < SECTORSIZE; k++) {
-                    // For every 16 bytes, print the start offset of that line in the file
-                    if (k % 16 == 0) {
-                        printf("%08X ", i + j * SECTORSIZE + k);
-                    }
-                    // Print the content of the file in hexadecimal form
-                    printf("%02X ", cluster_buffer[j * SECTORSIZE + k]);
-                    // Print a new line after every 16 bytes
-                    if ((k + 1) % 16 == 0) {
-                        printf("\n");
-                    }
-
-                    // End of the file is reached so print a new line and break the loop
-                    if (i + j * SECTORSIZE + k == file_directory_entry->size - 1) {
-                        printf("\n");
-                        break;
-                    }
+            // Print the current sector
+            for (int k = 0; k < CLUSTERSIZE; k++) {
+                // For every 16 bytes, print the start offset of that line in the file
+                if (k % 16 == 0) {
+                    printf("%08X ", i + k);
+                }
+                // Print the content of the file in hexadecimal form
+                printf("%02X ", cluster_buffer[k]);
+                // Print a new line after every 16 bytes
+                if ((k + 1) % 16 == 0) {
+                    printf("\n");
                 }
 
-            } else {
-                // Print the contents of the file in ASCII
-                for (int k = 0; k < SECTORSIZE; k++) {
-                    printf("%c", cluster_buffer[j * SECTORSIZE + k]);
+                // End of the file is reached so print a new line and break the loop
+                if (i + k == file_directory_entry->size - 1) {
+                    printf("\n");
+                    break;
+                }
+            }
 
-                    // End of the file is reached so print a new line and break the loop
-                    if (i + j * SECTORSIZE + k == file_directory_entry->size - 1) {
-                        printf("\n");
-                        break;
-                    }
+        } else {
+            // Print the contents of the file in ASCII
+            for (int k = 0; k < CLUSTERSIZE; k++) {
+                printf("%c", cluster_buffer[k]);
+
+                // End of the file is reached so print a new line and break the loop
+                if (i + k == file_directory_entry->size - 1) {
+                    printf("\n");
+                    break;
                 }
             }
         }
@@ -729,7 +731,7 @@ int get_next_FAT_table_entry(int fd, unsigned int cluster_number) {
     }
 
     // Convert the FAT table entry to an integer
-    int next_cluster = bytes_to_int(fat_table_entry, FAT_TABLE_ENTRY_SIZE);
+    int next_cluster = unsigned_bytes_to_int(fat_table_entry, FAT_TABLE_ENTRY_SIZE);
     return next_cluster;
 }
 
@@ -783,8 +785,11 @@ int read_root_directory(int fd, int option) {
                     break;
                 }
             }
-            // Add a dot between the file name and extension
-            total_file_name[file_name_index++] = '.';
+
+            // Remember the index of the dot    
+            int dot_index = file_name_index;
+            // Increment the file name index by 1 for the dot
+            file_name_index++;
 
             // Loop through the file extension same as the file name
             for (int j = FILENAME_SIZE; j < TOTAL_FILENAME_SIZE; j++) {
@@ -794,6 +799,11 @@ int read_root_directory(int fd, int option) {
                 } else {
                     break;
                 }
+            }
+
+            // Add a dot between the file name and extension if the extension is not empty 
+            if (dot_index + 1 != file_name_index) {
+                total_file_name[dot_index] = '.';
             }
 
             // Print the file name and extension if the LIST_DIRECTORIES option is set
@@ -901,7 +911,7 @@ int write_fat_table_entry(int fd, unsigned int cluster_number, unsigned int valu
     lseek(fd, offset, SEEK_SET);
 
     // Convert the value to 4 bytes in little-endian order
-    int_to_bytes(value, fat_table_entry);
+    int_to_unsigned_bytes(value, fat_table_entry);
 
     // Write the FAT table
     int result = write(fd, fat_table_entry, FAT_TABLE_ENTRY_SIZE);
@@ -963,6 +973,15 @@ int bytes_to_int(char* bytes, int length) {
     return value;
 }
 
+// Convert 4 bytes to an integer in little-endian order
+int unsigned_bytes_to_int(unsigned char* bytes, int length) {
+    int value = 0;
+    for (int i = 0; i < length; i++) {
+        value |= (int) (char_overflow_check(bytes[i])) << (i * 8);
+    }
+    return value;
+}
+
 // Convert an integer to 4 bytes in little-endian order
 // Fill the 4 bytes with the integer value
 void int_to_bytes(int val, char* bytes) {
@@ -972,15 +991,17 @@ void int_to_bytes(int val, char* bytes) {
     bytes[3] = (char) ((val >> 24) & 0xFF);
 }
 
-// Conver to capital letters
-void to_upper(char* str) {
-    for (int i = 0; i < strlen(str); i++) {
-        str[i] = toupper(str[i]);
-    }
+// Convert an integer to 4 bytes in little-endian order
+// Fill the 4 bytes with the integer value
+void int_to_unsigned_bytes(int val, unsigned char* bytes) {
+    bytes[0] = (char) (val & 0xFF);
+    bytes[1] = (char) ((val >> 8) & 0xFF);
+    bytes[2] = (char) ((val >> 16) & 0xFF);
+    bytes[3] = (char) ((val >> 24) & 0xFF);
 }
 
 // Check if the file name is valid
-int check_file_name(char* str) {
+int check_set_file_name(char* str) {
     // Check if the file name is empty
     if (strlen(str) > TOTAL_FILENAME_SIZE) {
         return FAILURE;
@@ -998,6 +1019,7 @@ int check_file_name(char* str) {
 
     // Check the characters
     for (int i = 0; i < strlen(str); i++) {
+        str[i] = toupper(str[i]);
         if (!isalnum(str[i]) && str[i] != '-' && str[i] != '_' && str[i] != '.') {
             return FAILURE;
         }
