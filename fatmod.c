@@ -7,10 +7,6 @@
 // mode, utilizing the read() and write() system calls, without mounting the FAT32 file system.
 // The program will be named fatmod. Through various options, it will interact with a file system image, enabling reading and writing of files.
 
-// TODOs:
-// Convert read by cluster to read by sector // NOTE: This may not be necessary
-// You may add incrementing pointers // NOTE: This may not be necessary
-// Add centiseconds to the time // NOTE: This may not be necessary // Cağrı bunu yapabilirsin
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,24 +138,6 @@ struct msdos_dir_entry* file_directory_entry;
 ./ fatmod disk1 -d fileA.txt
 */
 int main(int argc, char* argv[]) {
-    // BELOW ARE FOR TESTING PURPOSES
-    /* char* test_argv[] = { "fatmod", "disk1", "-l" };
-    argc = 3; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-r", "-b", "31_31t.ge1" };
-    argc = 5; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-c", "31_31t.ge1" };
-    argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-d", "fileA.txt" };
-    argc = 4; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-w", "31_31t.ge1", "0", "5000", "76" };
-    argc = 7; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-w", "31_31t.ge1", "3131", "10000", "75" };
-    argc = 7; */
-    /* char* test_argv[] = { "fatmod", "disk1", "-w", "31_31t.ge1", "1", "10000", "76" };
-    argc = 7; */
-    /* argv = test_argv; */
-    // ABOVE ARE FOR TESTING PURPOSES
-
     // Check if the user has entered the correct number of arguments
     if (argc == 2) {
         if (strcmp(argv[1], "-h") == 0) {
@@ -222,7 +200,7 @@ int main(int argc, char* argv[]) {
     fat_size = boot_sector->fat32.length;
     root_directory_cluster_offset = (reserved_sectors + fat_size * number_of_fat_tables) * SECTORSIZE;
     fat_table_offset = reserved_sectors * SECTORSIZE;
-    root_directory_max_content_size = CLUSTERSIZE / FILE_DIRECTORY_ENTRY_SIZE;
+    root_directory_max_content_size = (N_ROOT_DIRECTORY_CLUSTERS * CLUSTERSIZE) / FILE_DIRECTORY_ENTRY_SIZE;
 
     // Calculate usable clusters size and usable fat table size
     usable_clusters_size = (total_sectors - reserved_sectors - fat_size * number_of_fat_tables) / sectors_per_cluster;
@@ -611,8 +589,7 @@ int create_file_entry(int fd) {
     time_t current_time = time(NULL);
     struct tm* time_info = localtime(&current_time);
     // Set the creation time
-    // TODO: centiseconds are not set
-    file_directory_entry->ctime_cs = 0;
+    file_directory_entry->ctime_cs = (time_info->tm_sec % 2) * 100;
     file_directory_entry->ctime = (time_info->tm_hour << 11) | (time_info->tm_min << 5) | (time_info->tm_sec / 2);
     // Set the creation date
     file_directory_entry->cdate = ((time_info->tm_year - 80) << 9) | ((time_info->tm_mon + 1) << 5) | time_info->tm_mday;
@@ -751,7 +728,7 @@ int read_root_directory(int fd, int option) {
 
     // Traverse every entry in the root directory
     // Skip the first entry because it is the volume label
-    for (int i = 1; i < root_directory_max_content_size; i++) {
+    for (int i = 0; i < root_directory_max_content_size; i++) {
         // Read the file directory entry
         memcpy(file_directory_entry_raw, root_directory + i * FILE_DIRECTORY_ENTRY_SIZE, FILE_DIRECTORY_ENTRY_SIZE);
         file_directory_entry = (struct msdos_dir_entry*) file_directory_entry_raw;
@@ -763,6 +740,14 @@ int read_root_directory(int fd, int option) {
             if (option == FIND_FREE_ENTRY) {
                 return i;
             }
+        } else if (file_directory_entry->attr == 0x08 && LIST_DIRECTORIES == option) {
+            // This entry is a volume label
+            printf("Volume label: %s\n", file_directory_entry->name);
+        } else if (file_directory_entry->attr == 0x10) {
+            // This entry is a directory
+            // This project does not support directories
+            printf("WARNING: Detected directory entry. Directories are not supported!\n");
+            continue;
         } else if (file_directory_entry->attr == 0x0F) {
             // This entry is a long file name entry
             // This project does not support long file names
