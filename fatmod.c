@@ -196,9 +196,6 @@ int main(int argc, char* argv[]) {
     if (boot_sector->sec_per_clus != ASSUMED_SEC_PER_CLUS) {
         printf("WARNING: Sectors per cluster is not %d!\n", ASSUMED_SEC_PER_CLUS);
     }
-    if (boot_sector->fat_length != boot_sector->fat32.length) {
-        printf("WARNING: FAT length is not equal to FAT32 length!\n");
-    }
     total_sectors = boot_sector->total_sect;
     fat_size = boot_sector->fat32.length;
     root_directory_cluster_offset = (reserved_sectors + fat_size * number_of_fat_tables) * SECTORSIZE;
