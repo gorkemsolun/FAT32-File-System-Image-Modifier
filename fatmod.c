@@ -808,8 +808,8 @@ int read_root_directory(int fd, int option) {
 
             // Print the file name and extension if the LIST_DIRECTORIES option is set
             if (option == LIST_DIRECTORIES) {
-                // Print the file name and extension
-                printf("%s\n", total_file_name);
+                // Print the file name and extension and size of the file
+                printf("%s %d\n", total_file_name, file_directory_entry->size);
             } else {
                 // Find the entry with the given file name and extension
                 // and set the file_directory_entry pointer to that entry
