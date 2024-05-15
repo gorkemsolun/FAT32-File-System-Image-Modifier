@@ -196,6 +196,9 @@ int main(int argc, char* argv[]) {
     if (boot_sector->sec_per_clus != ASSUMED_SEC_PER_CLUS) {
         printf("WARNING: Sectors per cluster is not %d!\n", ASSUMED_SEC_PER_CLUS);
     }
+    if (boot_sector->fat_length != boot_sector->fat32.length) {
+        printf("WARNING: FAT length is not equal to FAT32 length!\n");
+    }
     total_sectors = boot_sector->total_sect;
     fat_size = boot_sector->fat32.length;
     root_directory_cluster_offset = (reserved_sectors + fat_size * number_of_fat_tables) * SECTORSIZE;
@@ -740,9 +743,11 @@ int read_root_directory(int fd, int option) {
             if (option == FIND_FREE_ENTRY) {
                 return i;
             }
-        } else if (file_directory_entry->attr == 0x08 && LIST_DIRECTORIES == option) {
+        } else if (file_directory_entry->attr == 0x08) {
             // This entry is a volume label
-            printf("Volume label: %s\n", file_directory_entry->name);
+            if (LIST_DIRECTORIES == option) {
+                printf("Volume label: %s\n", file_directory_entry->name);
+            }
         } else if (file_directory_entry->attr == 0x10) {
             // This entry is a directory
             // This project does not support directories
@@ -754,6 +759,11 @@ int read_root_directory(int fd, int option) {
             printf("WARNING: Detected long file name entry. Long file name entries are not supported!\n");
             continue;
         } else if (file_directory_entry->attr == 0x20) {
+            // If we are looking for a free entry, continue the loop, no need to check this entry
+            if (option == FIND_FREE_ENTRY) {
+                continue;
+            }
+
             // This entry is a valid file
             // Get the file name and extension by inserting a dot between them
             // File name is 11 bytes long consisting of 8 bytes for the name and 3 bytes for the extension
@@ -933,8 +943,8 @@ void print_help_message() {
     printf("Options:\n");
     printf("-h: Print this help message\n");
     printf("-l: List the contents of the root directory\n");
-    printf("-c <file>: Create a new file\n");
-    printf("-w <file> <start> <length> <string>: Write string to file\n");
+    printf("-c <file>: Create a new file with size 0\n");
+    printf("-w <file> <offset> <length> <data>: Write data[0-255] to file\n");
     printf("-r -b <file>: Read and print the file in binary\n");
     printf("-r -a <file>: Read and print the file in ASCII\n");
     printf("-d <file>: Delete the file\n");
