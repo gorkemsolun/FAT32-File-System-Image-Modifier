@@ -1,5 +1,8 @@
-// Görkem Kadir Solun 10.05.2024
+// Görkem Kadir Solun - 22003214 
+// Murat Çağrı Kara - 22102505
 // 
+// 10.05.2024 created
+//
 // This is project/program to access and modify a FAT32 disk
 // image(FAT32 volume). The disk image is stored as a regular Linux file, which
 // will simulate a disk formatted with the FAT32 file system. This program opens
